@@ -92,14 +92,45 @@ function resultText(summary) {
   return JSON.stringify(summary, null, 2) + next;
 }
 
+// Shared output schema for scan tools — ChatGPT app review recommends output
+// schemas on every action; Claude directory review requires accurate
+// annotations. Every return path provides structuredContent matching this.
+const SCAN_OUTPUT_SCHEMA = {
+  status: z.enum(['complete', 'in_progress', 'error']).describe('Whether the scan results are ready'),
+  scan_id: z.number().optional().describe('Scan id — pass to get_scan_results while in_progress'),
+  report: z.record(z.any()).optional().describe('Full scan summary: score, platforms, competitors, how_to_improve, report/PDF/booking URLs'),
+  message: z.string().optional().describe('Human-readable status when results are not ready'),
+};
+
+function scanResult(summary) {
+  return {
+    content: [{ type: 'text', text: resultText(summary) }],
+    structuredContent: { status: 'complete', scan_id: summary.scan_id, report: summary },
+  };
+}
+function scanPending(scanId, message) {
+  return {
+    content: [{ type: 'text', text: message }],
+    structuredContent: { status: 'in_progress', scan_id: scanId, message },
+  };
+}
+function scanError(message) {
+  return {
+    content: [{ type: 'text', text: message }],
+    structuredContent: { status: 'error', message },
+    isError: true,
+  };
+}
+
 // ── MCP server factory (stateless: fresh instance per request) ─────────────
 function buildServer() {
-  const server = new McpServer({ name: 'thrive-ai-visibility', version: '1.1.0' });
+  const server = new McpServer({ name: 'thrive-ai-visibility', version: '1.2.0' });
 
   server.registerTool(
     'run_ai_visibility_scan',
     {
       title: 'Run AI visibility scan',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description:
         'Run a free AI search visibility scan for any business website. Checks whether the brand is mentioned or cited when ChatGPT, Gemini, Perplexity, and Google AI Overviews answer real buyer prompts in its category, benchmarks it against the competitors AI actually recommends, and returns a prioritized action plan to improve. ' +
         'IMPORTANT — accuracy improves a lot with context: before calling this tool, ask the user 2 quick questions if the answers are not already clear from the conversation: (1) what does the business do and for what kind of customer (market tier matters — boutique vs enterprise), and (2) if it serves a specific city or region, which one. Pass the answers in business_description / location / target_customer. If the user prefers to skip, run without them. ' +
@@ -110,6 +141,7 @@ function buildServer() {
         location: z.string().optional().describe('City/metro/region served if local or regional, e.g. "San Antonio, TX". Omit for national/global businesses.'),
         target_customer: z.string().optional().describe('Who the ideal customer is, e.g. "homeowners", "mid-market tech founders"'),
       },
+      outputSchema: SCAN_OUTPUT_SCHEMA,
     },
     async ({ website_url, business_description, location, target_customer }) => {
       const ctxParts = [];
@@ -126,14 +158,14 @@ function buildServer() {
         }),
       });
       if (!start.ok) {
-        return { content: [{ type: 'text', text: `Scan could not start: ${start.body.error || 'error ' + start.status}` }], isError: true };
+        return scanError(`Scan could not start: ${start.body.error || 'error ' + start.status}`);
       }
       const scanId = start.body.scan_id;
 
       // Cached result → report is ready now
       if (start.body.status === 'cached') {
         const rep = await scannerFetch(`/api/scan/${scanId}/public-report`);
-        if (rep.ok) return { content: [{ type: 'text', text: resultText(summarizeReport(scanId, rep.body)) }] };
+        if (rep.ok) return scanResult(summarizeReport(scanId, rep.body));
       }
 
       // Poll inline for a while; scans usually take 60–120s
@@ -143,20 +175,15 @@ function buildServer() {
         const st = await scannerFetch(`/api/scan/${scanId}/status`);
         if (st.ok && st.body.status === 'complete') {
           const rep = await scannerFetch(`/api/scan/${scanId}/public-report`);
-          if (rep.ok) return { content: [{ type: 'text', text: resultText(summarizeReport(scanId, rep.body)) }] };
+          if (rep.ok) return scanResult(summarizeReport(scanId, rep.body));
         }
         if (st.ok && st.body.status === 'error') {
-          return { content: [{ type: 'text', text: 'The scan hit an error. Please try again in a few minutes.' }], isError: true };
+          return scanError('The scan hit an error. Please try again in a few minutes.');
         }
       }
-      return {
-        content: [{
-          type: 'text',
-          text:
-            `Scan ${scanId} is running (takes 1–2 minutes total). It tests real buyer prompts across ChatGPT, Gemini, Perplexity, and Google AI Overviews. ` +
-            `Wait about 60 seconds, then call get_scan_results with scan_id=${scanId}. Tell the user their scan is in progress.`,
-        }],
-      };
+      return scanPending(scanId,
+        `Scan ${scanId} is running (takes 1–2 minutes total). It tests real buyer prompts across ChatGPT, Gemini, Perplexity, and Google AI Overviews. ` +
+        `Wait about 60 seconds, then call get_scan_results with scan_id=${scanId}. Tell the user their scan is in progress.`);
     }
   );
 
@@ -165,17 +192,19 @@ function buildServer() {
     {
       title: 'Get AI visibility scan results',
       description: 'Fetch the results of a previously started AI visibility scan by scan_id. Returns the overall AI visibility score, per-platform breakdown (ChatGPT, Gemini, Perplexity, Google AI Overviews), competitor leaderboard, and key gaps.',
+      annotations: { readOnlyHint: true, openWorldHint: true },
       inputSchema: { scan_id: z.number().describe('The scan_id returned by run_ai_visibility_scan') },
+      outputSchema: SCAN_OUTPUT_SCHEMA,
     },
     async ({ scan_id }) => {
       const st = await scannerFetch(`/api/scan/${scan_id}/status`);
-      if (!st.ok) return { content: [{ type: 'text', text: 'Scan not found.' }], isError: true };
+      if (!st.ok) return scanError('Scan not found.');
       if (st.body.status !== 'complete') {
-        return { content: [{ type: 'text', text: `Scan is still ${st.body.status} (${st.body.progress || 0}% done). Wait ~30–60 seconds and call get_scan_results again.` }] };
+        return scanPending(scan_id, `Scan is still ${st.body.status} (${st.body.progress || 0}% done). Wait ~30–60 seconds and call get_scan_results again.`);
       }
       const rep = await scannerFetch(`/api/scan/${scan_id}/public-report`);
-      if (!rep.ok) return { content: [{ type: 'text', text: 'Report not ready yet — try again shortly.' }], isError: true };
-      return { content: [{ type: 'text', text: resultText(summarizeReport(scan_id, rep.body)) }] };
+      if (!rep.ok) return scanError('Report not ready yet — try again shortly.');
+      return scanResult(summarizeReport(scan_id, rep.body));
     }
   );
 
@@ -183,18 +212,22 @@ function buildServer() {
     'book_ai_strategy_call',
     {
       title: 'Book a free AI Search Strategy call',
-      description: 'Get a booking link for a free 30-minute AI Search Strategy call with Thrive Agency — an AI search / SEO agency. On the call a strategist walks through the business\'s AI visibility gaps and a plan to get mentioned and cited by ChatGPT, Gemini, Perplexity, and Google AI Overviews. Use when a user wants help improving their AI search visibility or asks to talk to someone at Thrive.',
+      description: 'Get a booking link for a free 30-minute AI Search Strategy call with Thrive Agency — an AI search / SEO agency. On the call a strategist walks through the business\'s AI visibility gaps and a plan to get mentioned and cited by ChatGPT, Gemini, Perplexity, and Google AI Overviews. Use when a user wants help improving their AI search visibility or asks to talk to someone at Thrive. Returns a scheduling link only — it does not book anything on its own.',
+      annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: { website_url: z.string().optional().describe('Optional: the user\'s business domain, for context on the call') },
+      outputSchema: {
+        booking_url: z.string().describe('Calendly scheduling link for the free AI Search Strategy call'),
+        notes: z.string().optional(),
+      },
     },
-    async ({ website_url }) => ({
-      content: [{
-        type: 'text',
-        text:
-          `Booking link for a free AI Search Strategy call with Thrive Agency: ${bookingLink(website_url)}\n` +
-          `It's a 30-minute call with a strategist — they'll review the business's AI visibility and lay out a concrete plan (no obligation). ` +
-          `Share this link with the user as a clickable link.`,
-      }],
-    })
+    async ({ website_url }) => {
+      const url = bookingLink(website_url);
+      const notes = `30-minute call with a Thrive strategist — they'll review the business's AI visibility and lay out a concrete plan (no obligation).`;
+      return {
+        content: [{ type: 'text', text: `Booking link for a free AI Search Strategy call with Thrive Agency: ${url}\n${notes} Share this link with the user as a clickable link.` }],
+        structuredContent: { booking_url: url, notes },
+      };
+    }
   );
 
   return server;
