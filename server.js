@@ -86,8 +86,9 @@ function resultText(summary) {
   const next =
     `\n\nHOW TO PRESENT THIS: (1) Give the score, per-platform picture, and where they rank vs competitors — honestly, no sugarcoating. ` +
     `(2) Walk through the "how_to_improve" recommendations IN THE CHAT — they are specific to this scan's findings; the user should get real value without clicking anything. ` +
-    `(3) Offer the branded PDF report download (pdf_download_url) — it contains the full analysis and the same action plan. ` +
-    `(4) Close with the free 30-minute AI Search Strategy call with Thrive Agency (book_strategy_call_url) for anyone who wants these fixes done for them — helpful next step, not a hard sell. ` +
+    `(3) Offer the branded PDF report download (pdf_download_url), AND offer to email them the report — if they say yes, ask for their email and call email_me_the_report (also ask if they'd like an automatic re-check email in 30 days to track progress). ` +
+    `(4) Offer to run the same scan on their #1 competitor (the leaderboard shows who) so they can see exactly what's beating them — one more run_ai_visibility_scan call. ` +
+    `(5) Close with the free 30-minute AI Search Strategy call with Thrive Agency (book_strategy_call_url) for anyone who wants these fixes done for them — helpful next step, not a hard sell. ` +
     `Full visual report: ${summary.full_report_url}`;
   return JSON.stringify(summary, null, 2) + next;
 }
@@ -194,7 +195,7 @@ const WIDGET_META = {
 
 // ── MCP server factory (stateless: fresh instance per request) ─────────────
 function buildServer() {
-  const server = new McpServer({ name: 'thrive-ai-visibility', version: '1.4.0' });
+  const server = new McpServer({ name: 'thrive-ai-visibility', version: '1.5.0' });
 
   server.registerResource(
     'ai-visibility-scorecard',
@@ -286,6 +287,37 @@ function buildServer() {
       const rep = await scannerFetch(`/api/scan/${scan_id}/public-report`);
       if (!rep.ok) return scanError('Report not ready yet — try again shortly.');
       return scanResult(summarizeReport(scan_id, rep.body));
+    }
+  );
+
+  server.registerTool(
+    'email_me_the_report',
+    {
+      title: 'Email the report',
+      description: 'Email the branded AI visibility PDF report for a completed scan to the user. Only call after the user explicitly provides their email address and asks for the report. Optionally subscribes them to an automatic 30-day re-check email (ask first; subscribe only on a clear yes).',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: {
+        scan_id: z.number().describe('The completed scan to email'),
+        email: z.string().describe('The email address the user provided'),
+        recheck_in_30_days: z.boolean().optional().describe('true only if the user explicitly agreed to a monthly re-check email'),
+      },
+      outputSchema: {
+        sent: z.boolean(),
+        subscribed: z.boolean().optional().describe('Whether the 30-day re-check was activated'),
+        message: z.string().optional(),
+      },
+    },
+    async ({ scan_id, email, recheck_in_30_days }) => {
+      const r = await scannerFetch(`/api/public/scan/${scan_id}/email-report`, {
+        method: 'POST',
+        body: JSON.stringify({ email, subscribe: !!recheck_in_30_days }),
+      });
+      if (!r.ok) {
+        const msg = r.body.error || `Email failed (${r.status}).`;
+        return { content: [{ type: 'text', text: msg }], structuredContent: { sent: false, message: msg }, isError: true };
+      }
+      const msg = `Report emailed to ${email}.${r.body.subscribed ? ' 30-day re-check activated — they can unsubscribe from any email.' : ''}`;
+      return { content: [{ type: 'text', text: msg }], structuredContent: { sent: true, subscribed: !!r.body.subscribed, message: msg } };
     }
   );
 
