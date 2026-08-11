@@ -122,14 +122,92 @@ function scanError(message) {
   };
 }
 
+// ── ChatGPT Apps SDK widget: visual scorecard rendered in-chat ──────────────
+// Self-contained HTML (no external requests — Apps SDK CSP). Reads the tool's
+// structuredContent from window.openai.toolOutput. Claude ignores the widget
+// and uses the text/structured content as before.
+const WIDGET_URI = 'ui://widget/scorecard.html';
+const WIDGET_HTML = `<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  :root{--green:#7D963D;--dark:#1a1a2e;--muted:#8a8a99;--bg:#fff;--line:#eee}
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font:14px/1.45 -apple-system,'Segoe UI',Roboto,sans-serif;color:var(--dark);background:var(--bg);padding:18px}
+  .hd{display:flex;align-items:center;gap:16px;margin-bottom:14px}
+  .dial{position:relative;width:92px;height:92px;flex-shrink:0}
+  .dial svg{transform:rotate(-90deg)}
+  .dial .num{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+  .dial .num b{font-size:26px}
+  .dial .num span{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .hd h2{font-size:17px;margin-bottom:2px}
+  .grade{font-size:12px;color:var(--muted)}
+  .rank{font-size:12px;margin-top:4px}
+  .rank b{color:var(--green)}
+  .sec{margin:14px 0 6px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
+  .plat{display:grid;grid-template-columns:110px 1fr 42px;gap:8px;align-items:center;margin:5px 0;font-size:12.5px}
+  .bar{height:8px;background:#f0f0f4;border-radius:4px;overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--green);border-radius:4px}
+  .pct{text-align:right;font-variant-numeric:tabular-nums;color:var(--muted)}
+  .comp{display:flex;justify-content:space-between;padding:5px 8px;border-radius:6px;font-size:12.5px}
+  .comp.you{background:#f0f5e6;font-weight:700}
+  .comp .v{color:var(--muted);font-variant-numeric:tabular-nums}
+  .rec{padding:7px 0;border-top:1px solid var(--line);font-size:12.5px}
+  .rec b{display:block;margin-bottom:1px}
+  .rec span{color:var(--muted);font-size:12px}
+  .btns{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+  .btn{flex:1;min-width:130px;text-align:center;padding:9px 10px;border-radius:8px;font-size:12.5px;font-weight:600;text-decoration:none;border:1px solid var(--line);color:var(--dark)}
+  .btn.primary{background:var(--green);border-color:var(--green);color:#fff}
+  .pending{padding:24px;text-align:center;color:var(--muted)}
+  @media (prefers-color-scheme:dark){:root{--dark:#ececf1;--bg:transparent;--line:#333;--muted:#9a9aa5}.bar{background:#2a2a33}.comp.you{background:rgba(125,150,61,.18)}}
+</style></head><body><div id="app"></div><script>
+(function(){
+  var out=(window.openai&&window.openai.toolOutput)||{};
+  var el=document.getElementById('app');
+  if(out.status!=='complete'||!out.report){el.innerHTML='<div class="pending">Scan in progress — results will appear here shortly.</div>';return}
+  var r=out.report;
+  var score=Math.max(0,Math.min(100,r.overall_score||0));
+  var C=2*Math.PI*40, off=C*(1-score/100);
+  function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+  var h='<div class="hd">'
+    +'<div class="dial"><svg width="92" height="92"><circle cx="46" cy="46" r="40" fill="none" stroke="#f0f0f4" stroke-width="9"/><circle cx="46" cy="46" r="40" fill="none" stroke="#7D963D" stroke-width="9" stroke-linecap="round" stroke-dasharray="'+C+'" stroke-dashoffset="'+off+'"/></svg><div class="num"><b>'+score+'</b><span>AI Visibility</span></div></div>'
+    +'<div><h2>'+esc(r.brand)+'</h2><div class="grade">'+esc(r.grade)+'</div><div class="rank">'+esc(r.your_rank||'')+(r.visibility_gap_vs_leader?' · <b>'+esc(r.visibility_gap_vs_leader)+'</b>':'')+'</div></div></div>';
+  h+='<div class="sec">Where AI mentions you</div>';
+  (r.platforms||[]).forEach(function(p){h+='<div class="plat"><span>'+esc(p.platform)+'</span><span class="bar"><i style="width:'+Math.max(2,p.visibility_pct||0)+'%"></i></span><span class="pct">'+(p.visibility_pct||0)+'%</span></div>'});
+  h+='<div class="sec">Category leaderboard</div>';
+  (r.competitors||[]).slice(0,5).forEach(function(c){h+='<div class="comp'+(c.is_you?' you':'')+'"><span>#'+c.rank+' '+esc(c.brand)+(c.is_you?' (you)':'')+'</span><span class="v">'+(c.visibility_pct||0)+'%</span></div>'});
+  var recs=(r.how_to_improve||[]).slice(0,3);
+  if(recs.length){h+='<div class="sec">Top fixes</div>';recs.forEach(function(x){h+='<div class="rec"><b>'+esc(x.title)+'</b><span>'+esc(x.why)+'</span></div>'})}
+  h+='<div class="btns">'
+    +(r.pdf_download_url?'<a class="btn" href="'+esc(r.pdf_download_url)+'" target="_blank" rel="noopener">Download PDF report</a>':'')
+    +(r.full_report_url?'<a class="btn" href="'+esc(r.full_report_url)+'" target="_blank" rel="noopener">Full report</a>':'')
+    +(r.book_strategy_call_url?'<a class="btn primary" href="'+esc(r.book_strategy_call_url)+'" target="_blank" rel="noopener">Book free strategy call</a>':'')
+    +'</div>';
+  el.innerHTML=h;
+})();
+</script></body></html>`;
+
+const WIDGET_META = {
+  'openai/outputTemplate': WIDGET_URI,
+  'openai/toolInvocation/invoking': 'Running AI visibility scan…',
+  'openai/toolInvocation/invoked': 'Scan complete',
+  'openai/widgetAccessible': true,
+};
+
 // ── MCP server factory (stateless: fresh instance per request) ─────────────
 function buildServer() {
-  const server = new McpServer({ name: 'thrive-ai-visibility', version: '1.3.0' });
+  const server = new McpServer({ name: 'thrive-ai-visibility', version: '1.4.0' });
+
+  server.registerResource(
+    'ai-visibility-scorecard',
+    WIDGET_URI,
+    { title: 'AI visibility scorecard', description: 'In-chat scorecard for scan results', mimeType: 'text/html+skybridge' },
+    async () => ({ contents: [{ uri: WIDGET_URI, mimeType: 'text/html+skybridge', text: WIDGET_HTML }] })
+  );
 
   server.registerTool(
     'run_ai_visibility_scan',
     {
       title: 'Run AI visibility scan',
+      _meta: WIDGET_META,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description:
         'Run a free AI search visibility scan for any business website. Tests 10 real buyer prompts across ChatGPT (web-search grounded), Gemini, Perplexity, and Google AI Overviews, checks whether the brand is mentioned or cited, benchmarks it against the competitors AI actually recommends, and returns a prioritized action plan to improve. ' +
@@ -193,6 +271,7 @@ function buildServer() {
     'get_scan_results',
     {
       title: 'Get AI visibility scan results',
+      _meta: WIDGET_META,
       description: 'Fetch the results of a previously started AI visibility scan by scan_id. Returns the overall AI visibility score, per-platform breakdown (ChatGPT, Gemini, Perplexity, Google AI Overviews), competitor leaderboard, and key gaps.',
       annotations: { readOnlyHint: true, openWorldHint: true },
       inputSchema: { scan_id: z.number().describe('The scan_id returned by run_ai_visibility_scan') },
