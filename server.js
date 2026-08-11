@@ -124,7 +124,7 @@ function scanError(message) {
 
 // ── MCP server factory (stateless: fresh instance per request) ─────────────
 function buildServer() {
-  const server = new McpServer({ name: 'thrive-ai-visibility', version: '1.2.0' });
+  const server = new McpServer({ name: 'thrive-ai-visibility', version: '1.3.0' });
 
   server.registerTool(
     'run_ai_visibility_scan',
@@ -132,18 +132,19 @@ function buildServer() {
       title: 'Run AI visibility scan',
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description:
-        'Run a free AI search visibility scan for any business website. Checks whether the brand is mentioned or cited when ChatGPT, Gemini, Perplexity, and Google AI Overviews answer real buyer prompts in its category, benchmarks it against the competitors AI actually recommends, and returns a prioritized action plan to improve. ' +
-        'IMPORTANT — accuracy improves a lot with context: before calling this tool, ask the user 2 quick questions if the answers are not already clear from the conversation: (1) what does the business do and for what kind of customer (market tier matters — boutique vs enterprise), and (2) if it serves a specific city or region, which one. Pass the answers in business_description / location / target_customer. If the user prefers to skip, run without them. ' +
-        'Takes 1–2 minutes; results may require a follow-up call to get_scan_results.',
+        'Run a free AI search visibility scan for any business website. Tests 10 real buyer prompts across ChatGPT (web-search grounded), Gemini, Perplexity, and Google AI Overviews, checks whether the brand is mentioned or cited, benchmarks it against the competitors AI actually recommends, and returns a prioritized action plan to improve. ' +
+        'IMPORTANT — accuracy improves a lot with context: before calling this tool, ask the user 2 quick questions if the answers are not already clear from the conversation: (1) what does the business do and for what kind of customer (market tier matters — boutique vs enterprise), and (2) if it serves a specific city or region, which one. Also offer a choice: "Want us to pick the 10 buyer questions we test, or do you have specific questions your customers ask AI that you want tested?" — most users should let the scan auto-generate them; if they provide their own, pass them in custom_prompts. If the user prefers to skip all of this, run without it. ' +
+        'Takes 1–3 minutes; results may require a follow-up call to get_scan_results.',
       inputSchema: {
         website_url: z.string().describe('The business website domain to scan, e.g. acmehvac.com'),
         business_description: z.string().optional().describe('What the business does, its niche, and market tier — e.g. "boutique M&A advisory for founder-led SaaS companies, $5-50M deals"'),
         location: z.string().optional().describe('City/metro/region served if local or regional, e.g. "San Antonio, TX". Omit for national/global businesses.'),
         target_customer: z.string().optional().describe('Who the ideal customer is, e.g. "homeowners", "mid-market tech founders"'),
+        custom_prompts: z.array(z.string()).max(10).optional().describe('Up to 10 specific buyer questions the user wants tested verbatim (e.g. "best HVAC marketing agency for franchises"). Omit to auto-generate 10 from the business context — the right default for most users.'),
       },
       outputSchema: SCAN_OUTPUT_SCHEMA,
     },
-    async ({ website_url, business_description, location, target_customer }) => {
+    async ({ website_url, business_description, location, target_customer, custom_prompts }) => {
       const ctxParts = [];
       if (business_description) ctxParts.push(`What the business does: ${business_description}`);
       if (location) ctxParts.push(`Location / service area: ${location}`);
@@ -152,8 +153,9 @@ function buildServer() {
         method: 'POST',
         body: JSON.stringify({
           website_url,
-          prompt_count: 4,
+          prompt_count: 10,
           user_context: ctxParts.join('\n'),
+          ...(Array.isArray(custom_prompts) && custom_prompts.length ? { custom_prompts } : {}),
           utm_source: 'llm_app', utm_medium: 'mcp', utm_campaign: 'ai_visibility_app',
         }),
       });
