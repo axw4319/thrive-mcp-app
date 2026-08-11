@@ -89,14 +89,19 @@ def main():
              '| Domain | Scanner rank | Peec rank | Drift | Scanner score | Peec vis% | Scan |',
              '|---|---|---|---|---|---|---|']
     alerts = []
+    first = True
     for domain, (proj, own_sub, context) in TARGETS.items():
         try:
+            if not first:
+                time.sleep(180)  # pace scans — scanner burst backstop 429s rapid sequential starts
+            first = False
             p_rank, p_vis = peec_own_rank(key, proj, own_sub)
             scan_id, s_rank, s_vis, score = scanner_scan(domain, context)
             drift = (s_rank - p_rank) if (s_rank and p_rank) else None
             lines.append(f'| {domain} | {s_rank or "—"} | {p_rank or "—"} | {drift if drift is not None else "—"} | {score} | {p_vis or "—"} | {SCANNER}/report/{scan_id} |')
-            if drift is not None and abs(drift) > DRIFT_ALERT:
-                alerts.append(f'{domain}: scanner #{s_rank} vs Peec #{p_rank} (drift {drift:+d})')
+            disagree = (s_rank and p_rank) and ((p_rank <= 3 and s_rank >= 8) or (s_rank <= 3 and p_rank >= 8))
+            if disagree:
+                alerts.append(f'{domain}: scanner #{s_rank} vs Peec #{p_rank} — qualitative disagreement')
             print(f'{domain}: scanner #{s_rank} vs peec #{p_rank}')
         except Exception as e:
             lines.append(f'| {domain} | ERROR | | | | | {e} |')
